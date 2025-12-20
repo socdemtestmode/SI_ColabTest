@@ -7,13 +7,18 @@ from signalrcore.protocol.messagepack_protocol import MessagePackHubProtocol
 import time
 
 class SIGameBot:
+    """
+    Connects to SIOnline, creates a game, hosts it, and logs all events.
+    Includes host interactivity to keep the game running.
+    """
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'SIGameBot/1.0'})
-        self.server_api_base_uri = None
+        self.server_api_uri = None
         self.sihost_connection = None
         self.game_name = f"bot-game-{int(time.time())}"
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+        logging.basicConfig(level=logging.INFO, format='%(asctime-s) - %(name)s - %(levelname)s - %(message)s')
         self.logger = logging.getLogger("SIGameBot")
 
     async def run(self):
@@ -40,49 +45,41 @@ class SIGameBot:
             response = self.session.get("https://vladimirkhil.com/api/si/servers")
             response.raise_for_status()
             servers = response.json()
-            if servers:
-                self.server_api_base_uri = servers[0]['uri']
-                self.logger.info(f"Server API base URI: {self.server_api_base_uri}")
-                return True
+            for server in servers:
+                if server.get('protocolVersion') == 8:
+                    self.server_api_uri = server['uri']
+                    self.logger.info(f"Compatible server found: {self.server_api_uri}")
+                    return True
+            self.logger.error("No compatible server found with protocolVersion 8.")
+            return False
         except requests.RequestException as e:
             self.logger.error(f"Server discovery failed: {e}")
         return False
 
     def create_game(self):
-        create_game_url = f"{self.server_api_base_uri}/api/v1/games"
+        create_game_url = f"{self.server_api_uri}/api/v1/games"
         self.logger.info(f"Creating game via POST to: {create_game_url}")
 
-        # Payload meticulously crafted based on the .ts contract files
         game_request = {
             "gameSettings": {
-                "networkGameName": self.game_name,
-                "humanPlayerName": "Jules_Host",
-                "networkGamePassword": "",
-                "isPrivate": False,
-                "allowViewers": True,
+                "networkGameName": self.game_name, "humanPlayerName": "Jules_Host", "networkGamePassword": "",
+                "isPrivate": False, "allowViewers": True,
                 "showman": {"name": "Jules_Host", "isHuman": True, "isReady": True},
-                "players": [],
+                "players": [{"name": "BotPlayer1", "isHuman": False, "isReady": True}],
                 "viewers": [],
                 "appSettings": {
-                    "gameMode": "Tv", # Classic
-                    "randomSpecials": True,
+                    "gameMode": "Tv", "randomSpecials": True,
                     "timeSettings": {
-                        "timeForChoosingQuestion": 30, "timeForThinkingOnQuestion": 60,
-                        "timeForPrintingAnswer": 0, "timeForGivingACat": 30,
-                        "timeForMakingStake": 30, "timeForThinkingOnSpecial": 60,
-                        "timeOfRound": 0, "timeForChoosingFinalTheme": 30,
-                        "timeForFinalThinking": 60, "timeForShowmanDecisions": 60,
-                        "timeForRightAnswer": 3, "timeForMediaDelay": 0,
+                        "timeForChoosingQuestion": 30, "timeForThinkingOnQuestion": 60, "timeForPrintingAnswer": 0,
+                        "timeForGivingACat": 30, "timeForMakingStake": 30, "timeForThinkingOnSpecial": 60,
+                        "timeOfRound": 0, "timeForChoosingFinalTheme": 30, "timeForFinalThinking": 60,
+                        "timeForShowmanDecisions": 60, "timeForRightAnswer": 3, "timeForMediaDelay": 0,
                         "timeForBlockingButton": 2, "partialImageTime": 0, "imageTime": 0
                     }
                 }
             },
-            "packageInfo": {
-                "type": 1, # LibraryItem
-                "uri": "@{random}",
-                "contentServiceUri": None, "secret": None, "source": None
-            },
-            "computerAccounts": []
+            "packageInfo": {"type": 1, "uri": "@{random}"},
+            "computerAccounts": [] # Not needed when players are defined in gameSettings
         }
 
         try:
@@ -111,7 +108,7 @@ class SIGameBot:
             ws_url = f"{host_uri.replace('https', 'wss')}/sihost?id={connection_id}"
 
             self.sihost_connection = HubConnectionBuilder().with_url(ws_url, {"cookies": self.session.cookies}).with_hub_protocol(MessagePackHubProtocol()).build()
-            self.sihost_connection.on("Receive", lambda msg: self.logger.info(f"<-- RECV: {msg}"))
+            self.sihost_connection.on("Receive", self.on_sihost_receive)
             self.sihost_connection.on_error(lambda err: self.logger.error(f"ERROR: {err}"))
 
             self.sihost_connection.start()
@@ -126,14 +123,31 @@ class SIGameBot:
             await asyncio.sleep(5)
 
             self.logger.info("--> SEND: START message")
-            await self.sihost_connection.send("SendMessage", [{"Text": "START"}])
+            # Correctly formatted message object
+            start_message = {"Sender": "Jules_Host", "Receiver": "", "Text": "START"}
+            await self.sihost_connection.send("SendMessage", [start_message])
 
-            self.logger.info("Game started. Logging all events.")
+            self.logger.info("Game started. Bot is now in interactive hosting mode.")
             await asyncio.Event().wait()
         except Exception as e:
             self.logger.error(f"SIHost connection/hosting error: {e}", exc_info=True)
         finally:
             if self.sihost_connection: self.sihost_connection.stop()
+
+    def on_sihost_receive(self, message):
+        try:
+            msg_obj = message[0]
+            message_text = msg_obj.get('Text', '')
+            sender = msg_obj.get('Sender', 'System')
+            self.logger.info(f"<-- RECV from {sender}: {message_text.replace(chr(10), ' | ')}")
+
+            # Correctly detect player answers and validate them
+            if message_text.startswith("ANSWER"):
+                self.logger.info("Player has answered. Automatically validating as correct.")
+                validation_message = {"Sender": "Jules_Host", "Receiver": "", "Text": "VALIDATE\n+\n"}
+                asyncio.create_task(self.sihost_connection.send("SendMessage", [validation_message]))
+        except Exception as e:
+            self.logger.warning(f"Error parsing sihost message: {message}, error: {e}")
 
 if __name__ == "__main__":
     try:
