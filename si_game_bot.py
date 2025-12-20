@@ -13,12 +13,12 @@ class SIGameBot:
     """
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({'User-Agent': 'SIGameBot/1.0'})
+        self.session.headers.update({'User-agent': 'SIGameBot/1.0'})
         self.server_api_uri = None
         self.sihost_connection = None
         self.game_name = f"bot-game-{int(time.time())}"
 
-        logging.basicConfig(level=logging.INFO, format='%(asctime-s) - %(name)s - %(levelname)s - %(message)s')
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         self.logger = logging.getLogger("SIGameBot")
 
     async def run(self):
@@ -79,7 +79,7 @@ class SIGameBot:
                 }
             },
             "packageInfo": {"type": 1, "uri": "@{random}"},
-            "computerAccounts": [] # Not needed when players are defined in gameSettings
+            "computerAccounts": []
         }
 
         try:
@@ -123,7 +123,6 @@ class SIGameBot:
             await asyncio.sleep(5)
 
             self.logger.info("--> SEND: START message")
-            # Correctly formatted message object
             start_message = {"Sender": "Jules_Host", "Receiver": "", "Text": "START"}
             await self.sihost_connection.send("SendMessage", [start_message])
 
@@ -141,9 +140,8 @@ class SIGameBot:
             sender = msg_obj.get('Sender', 'System')
             self.logger.info(f"<-- RECV from {sender}: {message_text.replace(chr(10), ' | ')}")
 
-            # Correctly detect player answers and validate them
             if message_text.startswith("ANSWER"):
-                self.logger.info("Player has answered. Automatically validating as correct.")
+                self.logger.info("Player has answered. Auto-validating as correct.")
                 validation_message = {"Sender": "Jules_Host", "Receiver": "", "Text": "VALIDATE\n+\n"}
                 asyncio.create_task(self.sihost_connection.send("SendMessage", [validation_message]))
         except Exception as e:
